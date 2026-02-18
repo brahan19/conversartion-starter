@@ -7,7 +7,8 @@ A **CrewAI** multi-agent project using the **hierarchical process** to turn a Li
 - **Accuracy-first design**: Grounds all facts in tool output; filters web results without concrete evidence; rejects unsupported claims
 - **Evidence Filter**: Removes web search results that don't clearly refer to the target person
 - **Multi-model setup**: Uses `gpt-4o` for research and report writing, `gpt-4o-mini` for coordination and context
-- **Stateful manager**: Orchestrator loop capped at 4 iterations per task
+- **Stateful manager**: Orchestrator loop capped at 2 iterations per task
+- **Iterative improvement**: Critique agent provides detailed rejection feedback that is passed back to the researcher to prevent repeated mistakes
 - **Firecrawl logging**: Visible search queries and results for debugging
 - **LinkedIn integration**: Uses Proxycurl API when available as source of truth
 
@@ -70,8 +71,8 @@ The crew will execute 5 tasks in sequence:
 1. **Research** – Uses LinkedIn (Proxycurl) + web search (Firecrawl) for career vibe, achievements, and interests. Includes source URLs for each fact.
 2. **Context Sync** – Reads `my_interests.md` to represent you.
 3. **Evidence Filter** – Filters out web search results that don't have concrete evidence they refer to the target person (same name + company/role match, or explicit mention).
-4. **Critique** – Validates filtered research depth and factual grounding; rejects unsupported or invented claims; can delegate back to the researcher.
-5. **Output** – Produces a Markdown report with 10 Pointed Questions and 10 Conversation Starters based only on filtered research. Optionally adds "What I can learn from them" (up to 10 items) and appends new interests to `my_interests.md`.
+4. **Critique** – Validates filtered research depth and factual grounding; rejects unsupported or invented claims; can delegate back to the researcher with detailed feedback (specific reasons and actionable instructions) to prevent repeated mistakes.
+5. **Output** – Produces a Markdown report with a detailed Career Vibe section (3-4 paragraphs telling their life story), Key Points, 10 Pointed Questions, and 10 Conversation Starters based only on filtered research. Optionally adds "What I can learn from them" (up to 10 items) and appends new interests to `my_interests.md`.
 
 Reports are saved to `reports/{person_slug}_{timestamp}.md`.
 
@@ -79,20 +80,20 @@ Reports are saved to `reports/{person_slug}_{timestamp}.md`.
 
 ### Agents (6 total)
 
-1. **Orchestrator** (Manager) – Coordinates the crew, delegates tasks, ensures pipeline completion. Uses `gpt-4o-mini`, capped at 4 iterations per task (`max_iter=4`).
+1. **Orchestrator** (Manager) – Coordinates the crew, delegates tasks, ensures pipeline completion. When the Critique agent rejects research and delegates back to the Researcher, the Orchestrator passes the complete rejection feedback (with specific reasons and actionable instructions) so the Researcher can address issues without repeating mistakes. Uses `gpt-4o-mini`, capped at 2 iterations per task (`max_iter=2`).
 2. **Web Researcher** – Gathers intelligence via LinkedIn + Firecrawl. Uses `gpt-4o` for accuracy. Only reports facts from tool output; never infers or invents.
 3. **Personal Context Agent** – Reads `my_interests.md` to represent your interests and expertise. Uses `gpt-4o-mini`.
 4. **Research Evidence Filter** – Filters web search results to keep only those with concrete evidence they refer to the target person. Uses `gpt-4o-mini`.
-5. **Review & Critique Agent** – Validates research depth and factual accuracy. Rejects unsupported claims. Uses `gpt-4o-mini`.
-6. **Question Architect** – Crafts the final report from filtered research only. Uses `gpt-4o` for quality. Can update `my_interests.md` when relevant.
+5. **Review & Critique Agent** – Validates research depth and factual accuracy. Rejects unsupported claims. When delegating back to the Researcher, includes detailed rejection feedback with specific reasons and actionable instructions. Uses `gpt-4o-mini`.
+6. **Question Architect** – Crafts the final report from filtered research only, including a detailed 3-4 paragraph Career Vibe section that tells the person's life story. Uses `gpt-4o` for quality. Can update `my_interests.md` when relevant.
 
 ### Tasks (5 total)
 
-1. **Research Task** – LinkedIn first (source of truth), then web search for additional context. Uses **name** and **current work** (when provided) to disambiguate search. Must cite source URLs. Grounds all facts in tool output.
+1. **Research Task** – LinkedIn first (source of truth), then web search for additional context. Gathers comprehensive information about career progression, transitions, motivations, and notable experiences to enable writing a detailed life story. Uses **name** and **current work** (when provided) to disambiguate search. Must cite source URLs. Grounds all facts in tool output.
 2. **Context Sync Task** – Extracts your focus areas from `my_interests.md`.
 3. **Evidence Filter Task** – Filters research to keep only facts with concrete evidence they refer to the target person; uses **name** and **current work** when provided to reject results about other people with the same name.
-4. **Critique Task** – Evaluates filtered research on depth and factual grounding. Can delegate back to researcher.
-5. **Output Task** – Produces Markdown report with questions and starters based only on filtered research.
+4. **Critique Task** – Evaluates filtered research on depth and factual grounding. When rejecting, provides detailed feedback with specific reasons and actionable instructions. Can delegate back to researcher with this feedback.
+5. **Output Task** – Produces Markdown report with a detailed Career Vibe section (3-4 paragraphs telling their life story), Key Points, questions and starters based only on filtered research.
 
 ### Accuracy Controls
 
@@ -100,6 +101,7 @@ Reports are saved to `reports/{person_slug}_{timestamp}.md`.
 - **LinkedIn as source of truth**: When available, LinkedIn data (headline, experience, education) is treated as canonical; web search only adds extra context.
 - **Evidence filtering**: Web results are filtered to remove those without concrete evidence they refer to the target person. When **name** and **current work** are provided, they are used to ensure results match this specific person (not another with the same name).
 - **Factual checks**: Critique agent rejects unsupported or invented details (e.g. specific numbers, achievements not stated).
+- **Iterative feedback**: When critique rejects research, detailed rejection reasons and actionable instructions are passed back to the Researcher through the Orchestrator, preventing repeated mistakes.
 - **Conservative output**: Question Architect prefers generic but accurate over specific but unsupported.
 
 ### Tools
@@ -119,21 +121,22 @@ Reports are saved to `reports/{person_slug}_{timestamp}.md`.
 
 ## Technical Notes
 
-- **Hierarchical process** – Orchestrator manager coordinates tasks and can re-delegate to Web Researcher when critique rejects research.
-- **Memory** – `Crew(..., memory=True)` keeps state across agents.
+- **Hierarchical process** – Orchestrator manager coordinates tasks and can re-delegate to Web Researcher when critique rejects research. The Orchestrator ensures rejection feedback is passed to the Researcher.
+- **Memory** – `Crew(..., memory=False)` - each session starts fresh without retaining information from previous runs.
 - **Model assignment** – Web Researcher and Question Architect use `gpt-4o`; others use `gpt-4o-mini`.
 - **Firecrawl logging** – Search queries and results are printed to console for debugging (see `tools/firecrawl_search_tool.py`).
-- **Stateful manager** – Orchestrator has `max_iter=4` to cap iterations per task.
+- **Stateful manager** – Orchestrator has `max_iter=2` to cap iterations per task.
 - **Proxycurl** – Optional; if `PROXYCURL_API_KEY` is not set, researcher uses web search only.
+- **Rejection feedback loop** – When Critique agent rejects research, it provides detailed feedback (specific reasons and actionable instructions) that is passed to the Researcher via the Orchestrator, enabling iterative improvement without repeating mistakes.
 
 ## Example Output
 
 The crew produces a Markdown report with:
-- Career vibe recap
-- Key points (filtered and grounded)
-- 10 Pointed Questions (bridging their background with your interests)
-- 10 Conversation Starters (grounded in filtered research)
-- Optional "What I can learn from them" section (up to 10 items)
-- Optional update to `my_interests.md`
+- **Career Vibe** – A detailed 3-4 paragraph narrative telling the person's life story, covering their background, education, career progression, key transitions, major roles, achievements, motivations, and current focus. Written as an engaging narrative that helps readers understand their journey.
+- **Key Points** – Bullet points highlighting major achievements and roles (filtered and grounded)
+- **10 Pointed Questions** – Specific questions bridging their background with your interests
+- **10 Conversation Starters** – Openers grounded in filtered research
+- **Optional "What I can learn from them" section** – Up to 10 items when relevant
+- **Optional update to `my_interests.md`** – When the person has expertise relevant to your interests
 
-All facts in the report are traceable to the filtered research; no unsupported claims are included.
+All facts in the report are traceable to the filtered research; no unsupported claims are included. The Career Vibe section weaves together verified facts into a compelling narrative while maintaining strict accuracy.
