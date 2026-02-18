@@ -1,6 +1,15 @@
 # Conversation Starter – CrewAI Hierarchical Networking Research
 
-A **CrewAI** multi-agent project using the **hierarchical process** to turn a LinkedIn URL into personalized research, critique, and conversation starters. The crew uses a manager (GPT-4o) to delegate and iterate between research, your personal context, a critique step, and a question architect.
+A **CrewAI** multi-agent project using the **hierarchical process** to turn a LinkedIn URL into accurate, personalized research and conversation starters. The crew uses an **Orchestrator** manager to coordinate research, evidence filtering, critique, and report generation with strict accuracy controls.
+
+## Features
+
+- **Accuracy-first design**: Grounds all facts in tool output; filters web results without concrete evidence; rejects unsupported claims
+- **Evidence Filter**: Removes web search results that don't clearly refer to the target person
+- **Multi-model setup**: Uses `gpt-4o` for research and report writing, `gpt-4o-mini` for coordination and context
+- **Stateful manager**: Orchestrator loop capped at 4 iterations per task
+- **Firecrawl logging**: Visible search queries and results for debugging
+- **LinkedIn integration**: Uses Proxycurl API when available as source of truth
 
 ## Requirements
 
@@ -24,21 +33,21 @@ A **CrewAI** multi-agent project using the **hierarchical process** to turn a Li
    pip install --index-url https://pypi.org/simple/ -r requirements.txt
    ```
 
-   If you see `No matching distribution found for crewai>=0.80.0`, your venv is using Python &lt; 3.10. Delete `venv`, then create it with `python3.10` or `python3.11` as above.
+   If you see `No matching distribution found for crewai>=0.80.0`, your venv is using Python < 3.10. Delete `venv`, then create it with `python3.10` or `python3.11` as above.
 
    If you see `Cannot fetch index base URL https://pypi.python.org/simple/`, use `--index-url https://pypi.org/simple/` or run `pip install --upgrade pip` first.
 
-2. **Configure environment**
+3. **Configure environment**
 
    Copy `.env.example` to `.env` and set:
 
-   - `OPENAI_API_KEY` – for CrewAI agents and the hierarchical manager (e.g. GPT-4o)
-   - `FIRECRAWL_API_KEY` – for web search ([firecrawl.dev](https://firecrawl.dev))
+   - `OPENAI_API_KEY` – for CrewAI agents (required)
+   - `FIRECRAWL_API_KEY` – for web search ([firecrawl.dev](https://firecrawl.dev)) (required)
    - `PROXYCURL_API_KEY` – *optional*; for LinkedIn profile data ([nubela.co/proxycurl](https://nubela.co/proxycurl/)). If not set, the researcher uses web search only.
 
-3. **Personal context**
+4. **Personal context**
 
-   Edit `my_interests.md` with your focus areas, interests, and expertise. This file is the source of truth for the Personal Context Agent and for personalizing questions and “What I can learn from them.”
+   Edit `my_interests.md` with your focus areas, interests, and expertise. This file is the source of truth for the Personal Context Agent and for personalizing questions and "What I can learn from them."
 
 ## Run
 
@@ -46,24 +55,75 @@ A **CrewAI** multi-agent project using the **hierarchical process** to turn a Li
 python main.py "https://www.linkedin.com/in/<username>/"
 ```
 
-The crew will:
+The crew will execute 5 tasks in sequence:
 
-1. **Research** – Use LinkedIn (Proxycurl) + web search (Firecrawl) for career vibe, achievements, and non-obvious interests.
-2. **Context sync** – Read `my_interests.md` to represent you.
-3. **Critique** – Compare research to your context; delegate back to the researcher if it’s too generic.
-4. **Output** – Produce a Markdown report with 5 Pointed Questions and 3 Conversation Starters, optionally add “What I can learn from them,” and append new interests to `my_interests.md` when relevant.
+1. **Research** – Uses LinkedIn (Proxycurl) + web search (Firecrawl) for career vibe, achievements, and interests. Includes source URLs for each fact.
+2. **Context Sync** – Reads `my_interests.md` to represent you.
+3. **Evidence Filter** – Filters out web search results that don't have concrete evidence they refer to the target person (same name + company/role match, or explicit mention).
+4. **Critique** – Validates filtered research depth and factual grounding; rejects unsupported or invented claims; can delegate back to the researcher.
+5. **Output** – Produces a Markdown report with 5 Pointed Questions and 3 Conversation Starters based only on filtered research. Optionally adds "What I can learn from them" and appends new interests to `my_interests.md`.
 
-## Project layout
+Reports are saved to `reports/{person_slug}_{timestamp}.md`.
 
-- `main.py` – Crew kickoff, `Process.hierarchical`, `manager_llm=LLM(model="gpt-4o")`, `memory=True`.
-- `agents.py` – Five agents: Orchestrator, Web Researcher, Personal Context, Review & Critique, Question Architect.
-- `tasks.py` – Four tasks: Research, Context Sync, Critique (with `allow_delegation=True`), Output.
-- `tools/` – Custom **LinkedInTool** (Proxycurl), **FirecrawlSearchTool** (dynamic query), **AppendInterestsTool** (update `my_interests.md`).
-- `my_interests.md` – Your interests and expertise (read by the crew; updated by the Question Architect when appropriate).
+## Architecture
 
-## Technical notes
+### Agents (6 total)
 
-- **Hierarchical process** – Manager LLM coordinates and can re-delegate to the Web Researcher when the critique step rejects the research.
+1. **Orchestrator** (Manager) – Coordinates the crew, delegates tasks, ensures pipeline completion. Uses `gpt-4o-mini`, capped at 4 iterations per task (`max_iter=4`).
+2. **Web Researcher** – Gathers intelligence via LinkedIn + Firecrawl. Uses `gpt-4o` for accuracy. Only reports facts from tool output; never infers or invents.
+3. **Personal Context Agent** – Reads `my_interests.md` to represent your interests and expertise. Uses `gpt-4o-mini`.
+4. **Research Evidence Filter** – Filters web search results to keep only those with concrete evidence they refer to the target person. Uses `gpt-4o-mini`.
+5. **Review & Critique Agent** – Validates research depth and factual accuracy. Rejects unsupported claims. Uses `gpt-4o-mini`.
+6. **Question Architect** – Crafts the final report from filtered research only. Uses `gpt-4o` for quality. Can update `my_interests.md` when relevant.
+
+### Tasks (5 total)
+
+1. **Research Task** – LinkedIn first (source of truth), then web search for additional context. Must cite source URLs. Grounds all facts in tool output.
+2. **Context Sync Task** – Extracts your focus areas from `my_interests.md`.
+3. **Evidence Filter Task** – Filters research to keep only facts with concrete evidence they refer to the target person.
+4. **Critique Task** – Evaluates filtered research on depth and factual grounding. Can delegate back to researcher.
+5. **Output Task** – Produces Markdown report with questions and starters based only on filtered research.
+
+### Accuracy Controls
+
+- **Grounding rules**: All tasks require facts to be traceable to tool output; no inference or invention.
+- **LinkedIn as source of truth**: When available, LinkedIn data (headline, experience, education) is treated as canonical; web search only adds extra context.
+- **Evidence filtering**: Web results are filtered to remove those without concrete evidence they refer to the target person.
+- **Factual checks**: Critique agent rejects unsupported or invented details (e.g. specific numbers, achievements not stated).
+- **Conservative output**: Question Architect prefers generic but accurate over specific but unsupported.
+
+### Tools
+
+- **LinkedInTool** (`tools/linkedin_tool.py`) – Calls Proxycurl API (`https://nubela.co/proxycurl/api/v2/linkedin`) to fetch structured LinkedIn profile data.
+- **FirecrawlSearchTool** (`tools/firecrawl_search_tool.py`) – Calls Firecrawl API (`https://api.firecrawl.dev/v1/search`) with dynamic queries. Returns up to 8 results. Includes logging to show queries and results in console.
+- **AppendInterestsTool** (`tools/append_interests_tool.py`) – Appends new interests to `my_interests.md` when the Question Architect identifies relevant expertise.
+
+## Project Layout
+
+- `main.py` – Crew setup, model assignment (`gpt-4o` for research/report, `gpt-4o-mini` for others), hierarchical process with Orchestrator as manager.
+- `agents.py` – Six agents: Orchestrator (manager), Web Researcher, Personal Context, Evidence Filter, Review & Critique, Question Architect.
+- `tasks.py` – Five tasks: Research, Context Sync, Evidence Filter, Critique, Output.
+- `tools/` – Custom tools: LinkedInTool (Proxycurl), FirecrawlSearchTool (with logging), AppendInterestsTool.
+- `my_interests.md` – Your interests and expertise (read by Personal Context Agent; updated by Question Architect when appropriate).
+- `reports/` – Generated reports saved as `{person_slug}_{timestamp}.md`.
+
+## Technical Notes
+
+- **Hierarchical process** – Orchestrator manager coordinates tasks and can re-delegate to Web Researcher when critique rejects research.
 - **Memory** – `Crew(..., memory=True)` keeps state across agents.
-- **Proxycurl** – `LinkedInTool` calls `https://nubela.co/proxycurl/api/v2/linkedin` with the profile URL.
-- **Firecrawl** – Custom tool calls `https://api.firecrawl.dev/v1/search` with a query so the researcher can run multiple searches.
+- **Model assignment** – Web Researcher and Question Architect use `gpt-4o`; others use `gpt-4o-mini`.
+- **Firecrawl logging** – Search queries and results are printed to console for debugging (see `tools/firecrawl_search_tool.py`).
+- **Stateful manager** – Orchestrator has `max_iter=4` to cap iterations per task.
+- **Proxycurl** – Optional; if `PROXYCURL_API_KEY` is not set, researcher uses web search only.
+
+## Example Output
+
+The crew produces a Markdown report with:
+- Career vibe recap
+- Key points (filtered and grounded)
+- 5 Pointed Questions (bridging their background with your interests)
+- 3 Conversation Starters (grounded in filtered research)
+- Optional "What I can learn from them" section
+- Optional update to `my_interests.md`
+
+All facts in the report are traceable to the filtered research; no unsupported claims are included.

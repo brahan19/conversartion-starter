@@ -33,13 +33,17 @@ def run_crew(linkedin_url):
     worker_agents = [
         agents["web_researcher"],
         agents["personal_context_agent"],
+        agents["evidence_filter_agent"],
         agents["review_critique_agent"],
         agents["question_architect"],
     ]
 
     cheap_llm = LLM(model="gpt-4o-mini")
+    stronger_llm = LLM(model="gpt-4o")  # Better accuracy for research and report writing
     # Manager agent is not in crew.agents, so it does not get crew's default LLM; set it explicitly.
     agents["orchestrator"].llm = cheap_llm
+    agents["web_researcher"].llm = stronger_llm
+    agents["question_architect"].llm = stronger_llm
     crew = Crew(
         agents=worker_agents,
         tasks=task_list,

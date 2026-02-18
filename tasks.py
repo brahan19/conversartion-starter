@@ -6,29 +6,58 @@ from crewai import Task, Agent
 
 def create_tasks(agents: dict, linkedin_url: str):
     """
-    Create the four tasks. Pass the linkedin_url so the Research task can use it.
+    Create the five tasks. Pass the linkedin_url for Research and Evidence Filter.
     """
     web_researcher = agents["web_researcher"]
     personal_context_agent = agents["personal_context_agent"]
+    evidence_filter_agent = agents["evidence_filter_agent"]
     review_critique_agent = agents["review_critique_agent"]
     question_architect = agents["question_architect"]
 
-    # 1. Research Task – LinkedIn (optional) + web search for career vibe, achievements, non-obvious interests
+    # 1. Research Task – LinkedIn as source of truth when available; web for extra context. Ground all facts.
     research_task = Task(
         description=(
-            "Produce a summary of this person's career 'vibe,' key achievements, and non-obvious interests. "
-            "Optionally use the LinkedIn tool with this URL: {linkedin_url} — if it says it is not configured, "
-            "use only web search. Always use web search (Firecrawl) to find them by name/URL: talks, articles, "
-            "side projects, and public presence. Focus on what would make for good conversation hooks, not just job titles."
+            "Produce a summary of this person's career vibe, key achievements, and non-obvious interests. "
+            "When the LinkedIn tool is configured, use it first with this URL: {linkedin_url}. Treat LinkedIn data "
+            "(headline, experience, education) as the source of truth for job titles, companies, and dates. "
+            "Use web search (Firecrawl) only to add additional information (talks, articles, side projects) that "
+            "clearly refers to this person; do not let web snippets contradict or replace LinkedIn facts. "
+            "If LinkedIn is not configured, use only web search. "
+            "CRITICAL: Only include facts that appear in the tool results. Do not infer, assume, or invent any "
+            "details (e.g. numbers, titles, achievements). If a claim is not clearly stated in the tool output, omit it. "
+            "Prefer saying 'not found' over guessing. Focus on conversation-worthy hooks that are explicitly supported."
         ).format(linkedin_url=linkedin_url),
         expected_output=(
-            "A structured summary: (1) Career vibe in 2–3 sentences, "
-            "(2) Key achievements (bullets), (3) Non-obvious interests or angles (bullets)."
+            "A structured summary: (1) Career vibe in 2–3 sentences, (2) Key achievements (bullets), "
+            "(3) Non-obvious interests or angles (bullets). For each fact from web search, include the source URL "
+            "(e.g. 'Source: https://...') so the Evidence Filter can verify the result refers to this person. "
+            "Every bullet must be traceable to a specific tool result; do not add unsupported claims."
         ),
         agent=web_researcher,
     )
 
-    # 2. Context Sync Task – Extract my focus areas from my_interests.md
+    # 2. Evidence Filter Task – Keep only research with concrete evidence it refers to the target person
+    filter_task = Task(
+        description=(
+            "You receive the Web Researcher's summary and the target person's LinkedIn URL: {linkedin_url}. "
+            "Filter out any fact or web search result that does NOT have concrete evidence it refers to this specific person. "
+            "Keep only: (1) Facts from LinkedIn (they refer to this profile). "
+            "(2) Web results where the source explicitly names the person AND matches their company/role (e.g. same company as LinkedIn), "
+            "or the URL clearly identifies them (e.g. their blog, their talk, their company profile naming them). "
+            "Remove: generic claims, results that could be about another person with the same name, any fact whose source "
+            "does not clearly identify the target person. Output a filtered research summary with only the facts that pass; "
+            "do not add new information. If in doubt, exclude the fact."
+        ).format(linkedin_url=linkedin_url),
+        expected_output=(
+            "A filtered research summary with the same structure (career vibe, key achievements, interests) but containing "
+            "only facts that have concrete evidence they refer to the target person. List which items were removed and why "
+            "(one line each), then the filtered summary."
+        ),
+        agent=evidence_filter_agent,
+        context=[research_task],
+    )
+
+    # 3. Context Sync Task – Extract my focus areas from my_interests.md
     context_sync_task = Task(
         description=(
             "Read my_interests.md and extract the user's current focus areas, interests, and expertise. "
@@ -42,42 +71,47 @@ def create_tasks(agents: dict, linkedin_url: str):
         agent=personal_context_agent,
     )
 
-    # 3. Critique Task – Evaluate research depth; allow_delegation so manager can send back to Researcher
-    # Prefer to approve when research has substantive content to avoid repeated iterations when testing.
+    # 4. Critique Task – Check depth and factual grounding of the filtered research.
     critique_task = Task(
         description=(
-            "Evaluate whether the research produced by the Web Researcher is deep enough. "
-            "Compare it against the Personal Context (user's interests and focus). "
-            "Prefer to approve if the research has any substantive content (career vibe, achievements, or interests). "
-            "Only delegate back to the Web Researcher if the research is clearly generic, empty, or lacks any concrete hooks. "
-            "If it meets the bar or is reasonably usable, approve it for the Question Architect."
+            "Evaluate the FILTERED research (output of the Research Evidence Filter) on two dimensions: "
+            "(1) Depth and relevance to the user's interests (Personal Context). "
+            "(2) Factual accuracy: every claim about the person must be explicitly supported by the filtered research. "
+            "Reject if you see specific claims (e.g. exact figures) not stated in the filtered research. "
+            "Prefer approving only when the filtered summary is both substantive and grounded. "
+            "Delegate back to the Web Researcher if the filtered research is generic, empty, lacks concrete hooks, or "
+            "contains unsupported details. If it meets the bar, approve for the Question Architect."
         ),
         expected_output=(
             "Either: (a) Approval with a one-sentence handoff to the Question Architect, or "
-            "(b) Rejection with specific instructions for the Web Researcher to improve the research."
+            "(b) Rejection with specific instructions for the Web Researcher."
         ),
         agent=review_critique_agent,
-        context=[research_task, context_sync_task],
+        context=[filter_task, context_sync_task],
         allow_delegation=True,
     )
 
-    # 4. Output Task – Markdown report + optional "What I can learn" and my_interests.md update
+    # 5. Output Task – Markdown report grounded in filtered research only; no invented facts.
     output_task = Task(
         description=(
             "Produce a Markdown report for the user with: "
             "(1) A brief recap of the person's career vibe and key points. "
             "(2) Five Pointed Questions – specific questions that bridge their background with the user's current state. "
             "(3) Three Conversation Starters – openers that connect their experience to the user's interests. "
-            "Final logic: If the person has an expertise or area the user does not yet have, "
-            "append a 'What I can learn from them' section to the report AND, if relevant, "
-            "use the 'Append to My Interests' tool to add a new Interest entry to my_interests.md."
+            "CRITICAL: Base the recap and all questions/starters only on the FILTERED research summary provided "
+            "(the output of the Research Evidence Filter). Do not add any fact about the person that is not in that "
+            "filtered research. If the research is sparse, keep the recap and questions conservative and generic. "
+            "Prefer generic but accurate openers over specific but unsupported ones. "
+            "If the person has an expertise or area the user does not yet have, append 'What I can learn from them' "
+            "and, if relevant, use the 'Append to My Interests' tool to add a new Interest entry to my_interests.md."
         ),
         expected_output=(
             "A Markdown report containing: recap, 5 Pointed Questions, 3 Conversation Starters, "
-            "and optionally 'What I can learn from them' and an updated my_interests.md (via the tool)."
+            "and optionally 'What I can learn from them' and an updated my_interests.md (via the tool). "
+            "Every claim about the person in the recap must appear in the filtered research; no unsupported details."
         ),
         agent=question_architect,
-        context=[research_task, context_sync_task, critique_task],
+        context=[filter_task, context_sync_task, critique_task],
     )
 
-    return [research_task, context_sync_task, critique_task, output_task]
+    return [research_task, context_sync_task, filter_task, critique_task, output_task]
