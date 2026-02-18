@@ -21,12 +21,15 @@ def create_agents():
     file_read_tool = FileReadTool(file_path=str(INTERESTS_FILE))
     append_interests_tool = AppendInterestsTool()
 
-    # 1. Orchestrator (Manager) – oversees delegation and task assignment
+    # 1. Orchestrator (Manager) – oversees delegation and task assignment.
+    # No tools: CrewAI injects delegation tools when used as manager.
+    # max_iter=4: cap the manager loop so it does not run more than 4 iterations per task (stateful).
     orchestrator = Agent(
         role="Orchestrator",
         goal="Oversee the crew, delegate tasks to the right agents, and ensure the research and output pipeline completes to a high standard.",
         backstory="You are an experienced coordinator who runs research and synthesis workflows. You assign work to the Web Researcher, Personal Context Agent, Review & Critique Agent, and Question Architect. You ensure the Critique agent's feedback leads to iteration when needed, and that the final deliverable is produced by the Question Architect.",
         allow_delegation=True,
+        max_iter=4,
         verbose=True,
     )
 

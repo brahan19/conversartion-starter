@@ -24,20 +24,28 @@ def run_crew(linkedin_url):
     """
     Run the hierarchical crew with the given LinkedIn profile URL.
     Returns the crew's output (final task result).
+    The Orchestrator is used as the manager; its loop is capped at 4 iterations per task.
     """
     agents = create_agents()
     task_list = create_tasks(agents, linkedin_url)
 
-    # Use gpt-4o-mini for cheaper testing (switch to gpt-4o for production)
-    # Multiple agent responses you see are from the critique loop: if Critique rejects
-    # the research, the manager re-delegates to the Web Researcher, so they run again.
+    # Orchestrator is the manager; it must not be in the agents list (CrewAI requirement).
+    worker_agents = [
+        agents["web_researcher"],
+        agents["personal_context_agent"],
+        agents["review_critique_agent"],
+        agents["question_architect"],
+    ]
+
     cheap_llm = LLM(model="gpt-4o-mini")
+    # Manager agent is not in crew.agents, so it does not get crew's default LLM; set it explicitly.
+    agents["orchestrator"].llm = cheap_llm
     crew = Crew(
-        agents=list(agents.values()),
+        agents=worker_agents,
         tasks=task_list,
         process=Process.hierarchical,
         llm=cheap_llm,
-        manager_llm=cheap_llm,
+        manager_agent=agents["orchestrator"],
         memory=True,
         verbose=True,
     )
